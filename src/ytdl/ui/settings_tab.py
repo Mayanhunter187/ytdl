@@ -25,6 +25,8 @@ COOKIES_OFF = "Off"
 COOKIES_FILE_OPTION = "cookies.txt file"
 COOKIE_CHOICES = [COOKIES_OFF, *[b.title() for b in COOKIE_BROWSERS], COOKIES_FILE_OPTION]
 CUSTOM_PRESET = "Custom"
+MULTI_SONG_ASK, MULTI_SONG_AUTO, MULTI_SONG_OFF = "Ask me", "Split automatically", "Keep as one file"
+MULTI_SONG_CHOICES = [MULTI_SONG_ASK, MULTI_SONG_AUTO, MULTI_SONG_OFF]
 ERROR_COLOR = ("#b3261e", "#f2867c")
 
 
@@ -90,15 +92,21 @@ class SettingsTab:
         app.name_template_var.trace_add("write", lambda *_: self._template_changed())
         self._template_changed()
 
-        self._label("Chapters")
-        ctk.CTkSwitch(body, text="Split videos with chapters into separate files", variable=app.split_var,
-                      command=self._split_changed).grid(row=self.r, column=1, columnspan=3, sticky="w", pady=6)
+        # --- Albums and mixes
+        self._section("Albums and mixes")
+        self._label("Several songs")
+        ctk.CTkSegmentedButton(body, values=MULTI_SONG_CHOICES, variable=app.multi_song_var,
+                               command=lambda _v: self._multi_song_changed()).grid(
+            row=self.r, column=1, columnspan=3, sticky="w", pady=6)
         self._next()
         self.keep_full = ctk.CTkSwitch(body, text="Also keep the full, unsplit file", variable=app.keep_full_var)
         self.keep_full.grid(row=self.r, column=1, columnspan=3, sticky="w", pady=(0, 6))
-        self._hint("Great for albums and long mixes: each chapter becomes its own track in a folder named after "
-                   "the video. Videos without chapters download normally.")
-        self._split_changed()
+        self._hint("When you download the audio of a long video that holds several songs (an album, a mix), YTDL "
+                   "finds them in the chapters, the description or a tracklist comment. “Ask me” opens a list "
+                   "where you pick and name the songs; “Split automatically” uses the detected names. Each song "
+                   "is saved as its own tagged file in a folder named after the album. Playlists and video "
+                   "downloads are never split.")
+        self._multi_song_changed()
 
         # --- Sign-in
         self._section("Sign-in (age-restricted and members-only videos)")
@@ -181,8 +189,9 @@ class SettingsTab:
         else:
             self.preview.configure(text=f"Example: {preview_template(template)}", text_color=("gray10", "gray90"))
 
-    def _split_changed(self) -> None:
-        self.keep_full.configure(state="normal" if self.app.split_var.get() else "disabled")
+    def _multi_song_changed(self) -> None:
+        splitting = self.app.multi_song_var.get() != MULTI_SONG_OFF
+        self.keep_full.configure(state="normal" if splitting else "disabled")
 
     def _test_cookies(self) -> None:
         browser, file = self.app.cookies_browser(), self.app.cookies_file()

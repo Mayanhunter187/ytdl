@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import customtkinter as ctk
@@ -66,6 +67,12 @@ class JobRow(ctk.CTkFrame):
             self.shown_status = job.status
             self._build_actions()
 
+    def _reveal_running(self) -> None:
+        if self.job.path:
+            self.tab.app.reveal_download(Path(self.job.path))
+        else:
+            self.tab.app.open_output_folder()  # still fetching info; no file yet
+
     def _build_actions(self) -> None:
         clear_children(self.actions)
         jobs, job = self.tab.app.jobs, self.job
@@ -78,6 +85,7 @@ class JobRow(ctk.CTkFrame):
             button("▼", lambda: jobs.move(job, 1), width=32, **SECONDARY)
             button("Cancel", lambda: jobs.cancel(job), width=70, **SECONDARY)
         elif job.status == RUNNING:
+            button("Folder", lambda: self._reveal_running(), **SECONDARY)
             button("Cancel", lambda: jobs.cancel(job), width=70, **DANGER)
         elif job.status == DONE:
             items = job.result.items if job.result else []

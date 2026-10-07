@@ -121,6 +121,7 @@ class HistoryTab:
             self.refresh()
 
     def redownload(self, entry: HistoryEntry) -> None:
-        opts = self.app.make_options(entry.url, audio_only=entry.mode == "audio", playlist=False)
-        self.app.enqueue(opts, entry.title)
-        self.app.show_tab("Downloads")
+        self.app.request_download(
+            entry.url, entry.title, audio_only=entry.mode == "audio", playlist=False,
+            on_done=lambda added: added and self.app.show_tab("Downloads"),
+        )

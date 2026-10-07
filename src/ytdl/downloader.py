@@ -31,7 +31,6 @@ NAME_PRESETS = {
     "Date - Title": "%(upload_date>%Y-%m-%d)s - %(title)s",
 }
 DEFAULT_NAME_TEMPLATE = NAME_PRESETS["Title [id]"]
-CHAPTER_SUFFIX = "/%(section_number)02d - %(section_title)s.%(ext)s"
 
 # Error text that usually means "you need to be signed in".
 SIGN_IN_HINTS = ("sign in to confirm", "members-only", "members only", "age-restricted", "inappropriate for some users",
@@ -51,8 +50,13 @@ class DownloadOptions:
     audio_format: str = "mp3"
     playlist: bool = False
     name_template: str = DEFAULT_NAME_TEMPLATE
-    split_chapters: bool = False
-    keep_full: bool = False  # with split_chapters: also keep the unsplit file
+    # Songs to cut an audio download into (from the track picker): [{"start", "end", "name"}]
+    tracks: list[dict] = field(default_factory=list)
+    album: str = ""
+    artist: str = ""
+    number_tracks: bool = True
+    artist_titles: bool = False  # track names are "Artist - Title"
+    keep_full: bool = False  # with tracks: also keep the unsplit file
     cookies_browser: str = ""
     cookies_file: str = ""
     format_spec: str = ""  # explicit yt-dlp format from the format picker
@@ -77,6 +81,7 @@ class Progress:
     percent: float | None = None
     detail: str = ""
     item: str = ""
+    path: str = ""  # the file being written, for "Open folder"
 
 
 @dataclass
@@ -84,7 +89,7 @@ class DownloadedItem:
     video_id: str
     title: str
     url: str
-    path: Path  # a file, or the folder of chapter tracks
+    path: Path  # a file, or the folder of split tracks
 
 
 @dataclass
@@ -310,7 +315,7 @@ def build_ydl_opts(opts: DownloadOptions) -> dict:
     ydl_opts = base_opts(opts.cookies_browser, opts.cookies_file)
     ydl_opts.update(
         paths={"home": str(opts.output_dir)},
-        outtmpl={"default": name + ".%(ext)s", "chapter": name + CHAPTER_SUFFIX},
+        outtmpl=name + ".%(ext)s",
         noplaylist=not opts.playlist,
         windowsfilenames=True,
         noprogress=True,
@@ -344,32 +349,21 @@ def build_ydl_opts(opts: DownloadOptions) -> dict:
         ydl_opts["merge_output_format"] = "mp4"
         ydl_opts["postprocessors"].append({"key": "FFmpegMetadata", "add_metadata": True})
 
-    if opts.split_chapters:
-        ydl_opts["postprocessors"].append({"key": "FFmpegSplitChapters", "force_keyframes": False})
-
     return ydl_opts
 
 
 class _Collector(PostProcessor):
     """Runs after the file reaches its final location and records it."""
 
-    def __init__(self, result: Result, opts: DownloadOptions) -> None:
+    def __init__(self, result: Result) -> None:
         super().__init__()
         self.result = result
-        self.opts = opts
 
     def run(self, info: dict):
         path = info.get("filepath")
         if not path:
             return [], info
         path = Path(path)
-        if self.opts.split_chapters and info.get("chapters"):
-            sample = {**info, "section_number": 1, "section_title": "x"}
-            chapter_dir = Path(self._downloader.prepare_filename(sample, "chapter")).parent
-            if chapter_dir.is_dir():
-                if not self.opts.keep_full:
-                    path.unlink(missing_ok=True)
-                path = chapter_dir
         self.result.items.append(
             DownloadedItem(
                 video_id=info.get("id", ""),
@@ -438,9 +432,9 @@ def _download_once(
                 f"{_fmt_bytes(done)} / {_fmt_bytes(total)}"
                 f"  ·  {_fmt_bytes(speed)}/s  ·  ETA {_fmt_eta(d.get('eta'))}"
             )
-            on_progress(Progress(title, percent, detail, item_label(info)))
+            on_progress(Progress(title, percent, detail, item_label(info), d.get("filename", "")))
         elif d["status"] == "finished":
-            on_progress(Progress(title, 100.0, "Download complete", item_label(info)))
+            on_progress(Progress(title, 100.0, "Download complete", item_label(info), d.get("filename", "")))
 
     def postprocessor_hook(d: dict) -> None:
         if cancel.is_set():
@@ -448,7 +442,8 @@ def _download_once(
         if d["status"] == "started":
             info = d.get("info_dict", {})
             name = d.get("postprocessor", "")
-            on_progress(Progress(info.get("title", ""), None, f"Processing ({name})…", item_label(info)))
+            on_progress(Progress(info.get("title", ""), None, f"Processing ({name})…", item_label(info),
+                                 info.get("filepath", "")))
 
     ydl_opts = build_ydl_opts(opts)
     ydl_opts["logger"] = _Logger(on_log)
@@ -458,10 +453,33 @@ def _download_once(
 
     opts.output_dir.mkdir(parents=True, exist_ok=True)
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.add_post_processor(_Collector(result, opts), when="after_move")
+        ydl.add_post_processor(_Collector(result), when="after_move")
         ret = ydl.download([opts.url])
     if cancel.is_set():
         raise DownloadCancelled()
     if ret != 0:
         raise RuntimeError("yt-dlp reported errors; see the log for details.")
+    if opts.tracks and opts.audio_only and result.items:
+        _split_into_tracks(opts, result.items[0], on_progress, cancel)
     return result
+
+
+def _split_into_tracks(opts: DownloadOptions, item: DownloadedItem,
+                       on_progress: Callable[[Progress], None], cancel: threading.Event) -> None:
+    """Cut the downloaded audio into the songs picked in the track dialog."""
+    from ytdl.tracks import safe_filename, split_audio  # tracks imports this module
+
+    full = item.path
+    folder = full.parent / safe_filename(opts.album or item.title)
+
+    def progress(number: int, total: int, name: str) -> None:
+        on_progress(Progress(item.title, (number - 1) / total * 100, f"Saving song {number} of {total}: {name}",
+                             path=str(folder)))
+
+    split_audio(full, folder, opts.tracks, opts.album or item.title, opts.artist, opts.number_tracks,
+                opts.artist_titles, progress, cancel)
+    if cancel.is_set():
+        raise DownloadCancelled()
+    if not opts.keep_full:
+        full.unlink(missing_ok=True)
+    item.path = folder

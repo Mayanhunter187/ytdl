@@ -92,6 +92,12 @@ class LinkTab:
         if not url:
             self.url_entry.focus_set()
             return
-        self.app.enqueue(self.app.make_options(url), url)
         self.url_var.set("")
-        self.app.show_tab("Downloads")
+
+        def done(added: bool) -> None:
+            if added:
+                self.app.show_tab("Downloads")
+            else:
+                self.url_var.set(url)  # backed out of the song picker; keep the link
+
+        self.app.request_download(url, url, on_done=done)

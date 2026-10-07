@@ -74,7 +74,7 @@ class LinkBanner(ctk.CTkFrame):
 
     def _download(self, audio_only: bool) -> None:
         playlist = True if is_playlist_url(self.url) else None
-        self.app.enqueue(self.app.make_options(self.url, audio_only=audio_only, playlist=playlist), self.url)
+        self.app.request_download(self.url, self.url, audio_only=audio_only, playlist=playlist)
         self.hide()
 
     def _formats(self) -> None:

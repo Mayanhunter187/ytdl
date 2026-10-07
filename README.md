@@ -17,7 +17,9 @@ and shipped as a single `YTDL.exe`. Nothing else needs to be installed.
 **Downloading**
 - **Video** as MP4 (Best down to 360p), or **audio** as MP3, M4A, Opus or WAV with title metadata and cover art.
 - **Choose the exact format**: every resolution and codec with its estimated size, or a specific audio bitrate.
-- **Split by chapters**: albums and long mixes become one file per chapter, in a folder named after the video.
+- **Albums and mixes become separate songs**: when you download the audio of a video with several songs, YTDL finds
+  them in the chapters, the description or a tracklist comment and opens a list where you tick the songs you want
+  and fix their names. Each song is saved as its own file with title, artist, album, track number and cover art.
 - **File names your way**: presets like *Channel folder / Title*, or any yt-dlp template, with a live preview.
 - **Sign-in cookies** (Firefox, Chrome, Edge… or a `cookies.txt` file) for age-restricted and members-only videos.
 
@@ -26,6 +28,7 @@ and shipped as a single `YTDL.exe`. Nothing else needs to be installed.
 - **Queue survives restarts**: close the app mid-download and it picks up where it left off next time.
 - **History** of everything downloaded. Videos you already have are skipped, so re-downloading a playlist only gets new videos.
 - **Windows notification** when the queue finishes while YTDL is in the background.
+- **Open folder** (bottom bar) shows the file that's downloading or just finished, selected in Explorer.
 
 **Staying up to date**
 - **yt-dlp updates itself** from PyPI and applies on the next start, so YouTube changes don't break the exe.
@@ -42,7 +45,7 @@ Run `YTDL.exe`. A splash screen shows while it unpacks (a few seconds).
 | Link | Paste a link you already have, or **Choose format…** for it |
 | Downloads | Progress and queue management. **Show log** shows yt-dlp's output |
 | History | Past downloads |
-| Settings | Quality, formats, folder, file names, chapters, cookies, clipboard, notifications, theme |
+| Settings | Quality, formats, folder, file names, albums and mixes, cookies, clipboard, notifications, theme |
 | About | Versions and updates |
 
 Files go to `Downloads\YTDL` by default. Settings, history, the queue and yt-dlp updates live in `%APPDATA%\ytdl`.
@@ -93,8 +96,9 @@ uv run ytdl
 | Path | Purpose |
 | --- | --- |
 | `src/ytdl/__main__.py` | Entry point: activates yt-dlp updates, then starts the UI |
-| `src/ytdl/downloader.py` | yt-dlp wrapper: formats, templates, chapters, cookies, live/duplicate skipping |
+| `src/ytdl/downloader.py` | yt-dlp wrapper: formats, templates, cookies, live/duplicate skipping |
 | `src/ytdl/formats.py` | Format list for the format picker |
+| `src/ytdl/tracks.py` | Finds the songs in album/mix videos, cleans up their names, cuts the audio into tagged tracks |
 | `src/ytdl/search.py` | Search with filters and paging, playlist/channel listing, thumbnails |
 | `src/ytdl/jobs.py` | Download queue: concurrency, reorder, cancel, retry, persistence |
 | `src/ytdl/history.py` | Download history (`history.json`) |

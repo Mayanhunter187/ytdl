@@ -81,10 +81,20 @@ class ResultRow(ctk.CTkFrame):
         self.title_label.configure(wraplength=max(160, int(room)))
 
     def _download(self, app: App, audio_only: bool) -> None:
-        opts = app.make_options(self.result.url, audio_only=audio_only, playlist=self.result.is_playlist)
-        app.enqueue(opts, self.result.title)
         btn = self.audio_btn if audio_only else self.video_btn
-        btn.configure(text="Added ✓", state="disabled")
+        text = btn.cget("text")
+        btn.configure(text="Checking…" if audio_only else text, state="disabled")
+
+        def done(added: bool) -> None:
+            if not btn.winfo_exists():
+                return
+            if added:
+                btn.configure(text="Added ✓", state="disabled")
+            else:
+                btn.configure(text=text, state="normal")
+
+        app.request_download(self.result.url, self.result.title, audio_only=audio_only,
+                             playlist=self.result.is_playlist, duration=self.result.duration, on_done=done)
 
     def set_thumbnail(self, image: ctk.CTkImage) -> None:
         self.thumb.configure(image=image, fg_color="transparent")

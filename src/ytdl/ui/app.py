@@ -17,14 +17,24 @@ from ytdl.downloader import DEFAULT_NAME_TEMPLATE, DownloadOptions, validate_tem
 from ytdl.history import History
 from ytdl.jobs import DONE, FAILED, RUNNING, SKIPPED, Job, JobManager
 from ytdl.ui.about_tab import AboutTab
-from ytdl.ui.common import MUTED, SECONDARY, open_path, resource_path
+from ytdl.tracks import MIN_MULTI_SONG_SECONDS, TrackScan
+from ytdl.tracks import scan as scan_tracks
+from ytdl.ui.common import MUTED, SECONDARY, open_path, resource_path, reveal
 from ytdl.ui.downloads_tab import DownloadsTab
 from ytdl.ui.history_tab import HistoryTab
 from ytdl.ui.link_banner import LinkBanner, is_youtube_url, url_from_drop
 from ytdl.ui.link_tab import LinkTab
 from ytdl.ui.notify import Notifier
 from ytdl.ui.search_tab import SearchTab
-from ytdl.ui.settings_tab import COOKIES_FILE_OPTION, COOKIES_OFF, SettingsTab
+from ytdl.ui.settings_tab import (
+    COOKIES_FILE_OPTION,
+    COOKIES_OFF,
+    MULTI_SONG_ASK,
+    MULTI_SONG_AUTO,
+    MULTI_SONG_OFF,
+    SettingsTab,
+)
+from ytdl.ui.track_dialog import TrackDialog
 from ytdl.updater import DATA_DIR, AppRelease, UpdateInfo
 
 try:
@@ -89,7 +99,9 @@ class App(ctk.CTk, DnDWrapper):
         self.playlist_var = self._setting_var(ctk.BooleanVar, "playlist", False)
         self.dir_var = self._setting_var(ctk.StringVar, "output_dir", str(DEFAULT_OUTPUT))
         self.name_template_var = self._setting_var(ctk.StringVar, "name_template", DEFAULT_NAME_TEMPLATE)
-        self.split_var = self._setting_var(ctk.BooleanVar, "split_chapters", False)
+        if "multi_song" not in self.settings and self.settings.get("split_chapters"):
+            self.settings["multi_song"] = MULTI_SONG_AUTO  # carry over the old "split chapters" switch
+        self.multi_song_var = self._setting_var(ctk.StringVar, "multi_song", MULTI_SONG_ASK)
         self.keep_full_var = self._setting_var(ctk.BooleanVar, "keep_full", False)
         self.concurrent_var = self._setting_var(ctk.StringVar, "concurrent", "2")
         self.skip_var = self._setting_var(ctk.BooleanVar, "skip_existing", True)
@@ -111,6 +123,7 @@ class App(ctk.CTk, DnDWrapper):
         self.jobs.max_concurrent = int(self.concurrent_var.get())
         self.concurrent_var.trace_add("write", lambda *_: self._set_concurrency())
         self._batch: list[Job] = []  # finished since the queue was last idle
+        self.last_saved: Path | None = None  # newest finished file, for "Open folder"
 
         self.title("YTDL - YouTube Downloader")
         self.geometry("920x780")
@@ -166,7 +179,7 @@ class App(ctk.CTk, DnDWrapper):
         self.progress.grid_remove()
         self.app_update_btn = ctk.CTkButton(bar, text="", width=10, command=lambda: self.show_tab("About"))
         self.update_btn = ctk.CTkButton(bar, text="", width=10, command=self.restart)
-        ctk.CTkButton(bar, text="Open folder", width=100, command=self.open_output_folder, **SECONDARY).grid(
+        ctk.CTkButton(bar, text="Open folder", width=100, command=self.open_current_folder, **SECONDARY).grid(
             row=0, column=3, rowspan=2, padx=(6, 12)
         )
         self._refresh_update_ui()
@@ -282,7 +295,6 @@ class App(ctk.CTk, DnDWrapper):
             audio_format=self.audio_var.get(),
             playlist=self.playlist_var.get() if playlist is None else playlist,
             name_template=self._name_template(),
-            split_chapters=self.split_var.get(),
             keep_full=self.keep_full_var.get(),
             cookies_browser=self.cookies_browser(),
             cookies_file=self.cookies_file(),
@@ -297,10 +309,66 @@ class App(ctk.CTk, DnDWrapper):
         self.downloads_tab.log(f"[#{job.id}] Added: {label}")
         return job
 
+    def request_download(self, url: str, label: str, audio_only: bool | None = None, playlist: bool | None = None,
+                         duration: float | None = None, on_done: Callable[[bool], None] | None = None) -> None:
+        """Queue a download, first checking audio downloads for several songs.
+
+        on_done(added) runs once the item is queued (True) or the user backs out (False).
+        """
+        opts = self.make_options(url, audio_only=audio_only, playlist=playlist)
+        mode = self.multi_song_var.get()
+        if (not opts.audio_only or opts.playlist or mode == MULTI_SONG_OFF
+                or (duration is not None and duration < MIN_MULTI_SONG_SECONDS)):
+            self.enqueue(opts, label)
+            if on_done:
+                on_done(True)
+            return
+
+        self._refresh_status(last=f"Looking for songs in {label}…")
+
+        def work() -> None:
+            try:
+                found = scan_tracks(url, opts.cookies_browser, opts.cookies_file)
+            except Exception:
+                found = None  # the download itself will report any real problem
+            self.call_soon(self._after_scan, opts, label, found, mode, on_done)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _after_scan(self, opts: DownloadOptions, label: str, found: TrackScan | None, mode: str,
+                    on_done: Callable[[bool], None] | None) -> None:
+        if found and mode == MULTI_SONG_AUTO:
+            picked = [t for t in found.tracks if t.selected]
+            opts.tracks = [{"start": t.start, "end": t.end, "name": t.name} for t in picked]
+            opts.album, opts.artist, opts.artist_titles = found.album, found.artist, found.artist_titles
+            label = f"{found.album} ({len(picked)} songs)"
+        elif found:
+            self._refresh_status(last=f"Found {len(found.tracks)} songs in {label}")
+            TrackDialog(self, opts, label, found, on_done)
+            return
+        self._refresh_status(last=f"Added: {label}")
+        self.enqueue(opts, label)
+        if on_done:
+            on_done(True)
+
     def open_output_folder(self) -> None:
         folder = Path(self.dir_var.get().strip() or DEFAULT_OUTPUT).expanduser()
         folder.mkdir(parents=True, exist_ok=True)
         open_path(folder)
+
+    def open_current_folder(self) -> None:
+        """Show the file that's downloading or just finished in Explorer."""
+        running = [j for j in self.jobs.jobs if j.status == RUNNING and j.path]
+        target = Path(running[0].path) if running else self.last_saved
+        if target is None:
+            self.open_output_folder()
+        else:
+            self.reveal_download(target)
+
+    def reveal_download(self, target: Path) -> None:
+        if not target.exists() and target.with_name(target.name + ".part").exists():
+            target = target.with_name(target.name + ".part")  # still downloading
+        reveal(target)
 
     def _on_job_event(self, job_id: int, kind: str, payload: object) -> None:
         if kind == "log":
@@ -323,6 +391,7 @@ class App(ctk.CTk, DnDWrapper):
         if job.status == DONE and job.result:
             for item in job.result.items:
                 self.history.add(item.video_id, item.title, item.url, job.mode, item.path)
+                self.last_saved = item.path
             self.history_tab.refresh()
         self._batch.append(job)
         self._refresh_status(last=f"{job.status}: {job.display_title}")

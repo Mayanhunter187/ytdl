@@ -28,6 +28,7 @@ class Job:
     percent: float | None = 0.0
     title: str = ""
     detail: str = ""
+    path: str = ""  # latest file being written, for "Open folder"
     result: Result | None = None
     cancel: threading.Event = field(default_factory=threading.Event)
 
@@ -188,6 +189,7 @@ class JobManager:
             p: Progress = payload
             job.title = f"[{p.item}] {p.title}" if p.item else p.title or job.title
             job.percent, job.detail = p.percent, p.detail
+            job.path = p.path or job.path
             self._on_change(job)
             return
 
@@ -201,7 +203,11 @@ class JobManager:
                 job.detail = f"Skipped: {', '.join(reasons)}"
             else:
                 job.status, job.percent = DONE, 100.0
-                job.detail = f"Saved {saved} file{'s' if saved != 1 else ''}"
+                if job.opts.tracks and saved:
+                    songs = len(job.opts.tracks)
+                    job.detail = f"Saved {songs} song{'s' if songs != 1 else ''} in {result.items[0].path.name}"
+                else:
+                    job.detail = f"Saved {saved} file{'s' if saved != 1 else ''}"
                 if skipped:
                     job.detail += f", skipped {skipped}"
         elif kind == "cancelled":
