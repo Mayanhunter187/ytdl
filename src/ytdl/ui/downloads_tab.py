@@ -26,14 +26,14 @@ class JobRow(ctk.CTkFrame):
         )
         self.title.grid(row=0, column=0, sticky="ew", padx=12, pady=(10, 0))
         line = ctk.CTkFrame(self, fg_color="transparent")
-        line.grid(row=1, column=0, sticky="ew", padx=12)
+        line.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 8))
         self.status = ctk.CTkLabel(line, text="", font=ctk.CTkFont(weight="bold"))
         self.status.pack(side="left")
         self.detail = ctk.CTkLabel(line, text="", anchor="w", text_color=MUTED)
         self.detail.pack(side="left", padx=(8, 0), fill="x", expand=True)
         self.progress = ctk.CTkProgressBar(self, height=8)
         self.progress.set(0)
-        self.progress.grid(row=2, column=0, sticky="ew", padx=12, pady=(2, 10))
+        self.progress.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 10))
         self.actions = ctk.CTkFrame(self, fg_color="transparent")
         self.actions.grid(row=0, column=1, rowspan=3, padx=10)
         self.refresh()
@@ -47,6 +47,11 @@ class JobRow(ctk.CTkFrame):
         self.status.configure(text=f"{job.status}", text_color=STATUS_COLORS.get(job.status, MUTED))
         self.detail.configure(text=f"{kind}  ·  {job.detail}" if job.detail else kind)
 
+        # A bar at 0% still draws a sliver, so only show it while it means something.
+        if job.status in (RUNNING, DONE):
+            self.progress.grid()
+        else:
+            self.progress.grid_remove()
         if job.status == RUNNING and job.percent is None:
             if self.progress.cget("mode") != "indeterminate":
                 self.progress.configure(mode="indeterminate")

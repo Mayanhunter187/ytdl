@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import io
+import re
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
@@ -16,6 +17,9 @@ from ytdl.downloader import find_deno
 THUMB_SIZE = (128, 72)
 
 
+CHANNEL_URL = re.compile(r"^https?://(www\.)?youtube\.com/(channel/[\w-]+|@[^/?#]+|c/[^/?#]+|user/[^/?#]+)/?$")
+
+
 @dataclass
 class SearchResult:
     title: str
@@ -24,10 +28,17 @@ class SearchResult:
     duration: float | None = None
     views: int | None = None
     thumbnail: str | None = None
-    is_playlist: bool = False
+    is_playlist: bool = False  # anything that holds several videos, channels included
+
+    @property
+    def is_channel(self) -> bool:
+        """A channel's front page (not one of its tabs like /videos)."""
+        return bool(CHANNEL_URL.match(self.url))
 
     @property
     def meta(self) -> str:
+        if self.is_channel:
+            return "Channel  ·  Browse to see its videos, shorts and live streams"
         parts = [self.channel] if self.channel else []
         if self.is_playlist:
             parts.append("Playlist")

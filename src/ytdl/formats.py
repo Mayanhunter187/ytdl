@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 import yt_dlp
 
-from ytdl.downloader import base_opts
+from ytdl.downloader import base_opts, with_cookie_fallback
 
 CODEC_NAMES = {"avc1": "H.264", "vp09": "VP9", "vp9": "VP9", "av01": "AV1", "mp4a": "AAC", "opus": "Opus"}
 
@@ -42,11 +42,15 @@ def _size(fmt: dict, duration: float | None) -> int | None:
     return size
 
 
-def list_formats(url: str, cookies_browser: str = "", cookies_file: str = "") -> FormatList:
+def _extract(url: str, cookies_browser: str, cookies_file: str) -> dict:
     opts = base_opts(cookies_browser, cookies_file)
     opts["noplaylist"] = True
     with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=False)
+        return ydl.extract_info(url, download=False)
+
+
+def list_formats(url: str, cookies_browser: str = "", cookies_file: str = "") -> FormatList:
+    info = with_cookie_fallback(lambda b, f: _extract(url, b, f), cookies_browser, cookies_file)
     if info.get("_type") == "playlist":
         raise ValueError("That's a playlist. Pick formats for a single video instead.")
 

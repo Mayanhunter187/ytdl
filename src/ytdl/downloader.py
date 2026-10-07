@@ -7,10 +7,11 @@ from the imageio-ffmpeg / deno Python packages, falling back to PATH.
 
 from __future__ import annotations
 
+import re
 import shutil
 import sys
 import threading
-from dataclasses import asdict, dataclass, field, fields
+from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
 from typing import Callable
 
@@ -34,7 +35,7 @@ CHAPTER_SUFFIX = "/%(section_number)02d - %(section_title)s.%(ext)s"
 
 # Error text that usually means "you need to be signed in".
 SIGN_IN_HINTS = ("sign in to confirm", "members-only", "members only", "age-restricted", "inappropriate for some users",
-                 "private video", "join this channel")
+                 "private video", "join this channel", "login required", "--cookies")
 
 
 class DownloadCancelled(Exception):
@@ -137,11 +138,106 @@ def base_opts(cookies_browser: str = "", cookies_file: str = "") -> dict:
     return opts
 
 
+def _clean(message: str) -> str:
+    while message.startswith("ERROR: "):
+        message = message.removeprefix("ERROR: ")
+    message = " ".join(message.split())  # yt-dlp pads URLs with double spaces
+    message = re.sub(r"^\[[\w:]+\] (?:[\w-]+: )?", "", message)  # "[youtube] abc123: ", "[generic] "
+    # Command-line advice ("Use --cookies ...", "See ...wiki/FAQ...") means nothing in a GUI.
+    message = re.split(r" (?:Use --|See https://github\.com/yt-dlp/yt-dlp/wiki/FAQ)", message)[0]
+    return message.strip()
+
+
 def friendly_error(message: str) -> str:
-    message = message.removeprefix("ERROR: ").strip()
-    if any(hint in message.lower() for hint in SIGN_IN_HINTS):
+    needs_sign_in = is_sign_in_error(message)  # before _clean drops the "--cookies" advice
+    message = _clean(message)
+    if needs_sign_in and "Settings" not in message:
         message += " (try turning on sign-in cookies in Settings)"
     return message
+
+
+def is_sign_in_error(message: str) -> bool:
+    return any(hint in message.lower() for hint in SIGN_IN_HINTS)
+
+
+def is_cookie_error(message: str) -> bool:
+    """yt-dlp couldn't load the cookies themselves (locked, encrypted, missing)."""
+    lower = message.lower()
+    return "cookie" in lower and any(
+        word in lower for word in ("could not copy", "could not find", "decrypt", "database", "failed to load",
+                                   "unsupported", "keyring", "permission")
+    )
+
+
+def cookie_source(cookies_browser: str, cookies_file: str) -> str:
+    return "your cookies.txt file" if cookies_file else cookies_browser.title()
+
+
+def cookie_advice(cookies_browser: str, cookies_file: str) -> str:
+    if cookies_file:
+        return "Check that the cookies.txt file exists and was exported while signed in to YouTube."
+    if cookies_browser == "firefox":
+        return "Make sure Firefox is installed and you're signed in to YouTube in it."
+    return (f"{cookies_browser.title()} locks and encrypts its cookies while it runs. Close it completely and try "
+            "again, or switch to Firefox or a cookies.txt file in Settings.")
+
+
+def with_cookie_fallback(fn: Callable, cookies_browser: str, cookies_file: str,
+                         log: Callable[[str], None] | None = None):
+    """Run fn(cookies_browser, cookies_file) without cookies first.
+
+    Cookies are only used if YouTube says the video needs a signed-in account,
+    so a locked or unreadable browser profile never breaks normal downloads.
+    """
+    if not (cookies_browser or cookies_file):
+        return fn("", "")
+    try:
+        return fn("", "")
+    except DownloadCancelled:
+        raise
+    except Exception as exc:
+        if not is_sign_in_error(str(exc)):
+            raise
+    source = cookie_source(cookies_browser, cookies_file)
+    if cookies_file and not Path(cookies_file).is_file():
+        raise RuntimeError(f"YouTube wants a signed-in account for this, but the cookies file {cookies_file} "
+                           "doesn't exist. Choose it again in Settings.")
+    if log:
+        log(f"YouTube wants a signed-in account for this; retrying with cookies from {source}.")
+    try:
+        return fn(cookies_browser, cookies_file)
+    except DownloadCancelled:
+        raise
+    except Exception as exc:
+        message = _clean(str(exc))
+        if is_cookie_error(message):
+            raise RuntimeError(f"Couldn't read cookies from {source}. "
+                               f"{cookie_advice(cookies_browser, cookies_file)}") from exc
+        if is_sign_in_error(message):
+            raise RuntimeError(f"{message.rstrip('.')}. Even with cookies from {source}, YouTube still wants a sign-in. "
+                               f"Make sure you're signed in to YouTube there (Settings).") from exc
+        raise
+
+
+def test_cookies(cookies_browser: str, cookies_file: str) -> str:
+    """Try loading the configured cookies. Returns a message for the Settings tab."""
+    if not (cookies_browser or cookies_file):
+        return "Cookies are off."
+    if cookies_file and not Path(cookies_file).is_file():
+        return f"✗ Can't find {cookies_file}. Choose the cookies.txt file with Browse…"
+    source = cookie_source(cookies_browser, cookies_file)
+    try:
+        with yt_dlp.YoutubeDL(base_opts(cookies_browser, cookies_file)) as ydl:
+            jar = ydl.cookiejar
+            youtube = sum(1 for c in jar if c.domain.endswith(("youtube.com", "google.com")))
+    except Exception as exc:
+        message = _clean(str(exc))
+        if is_cookie_error(message):
+            return f"✗ Couldn't read cookies from {source}. {cookie_advice(cookies_browser, cookies_file)}"
+        return f"✗ {message}"
+    if not youtube:
+        return f"Read cookies from {source}, but none are for YouTube. Sign in to YouTube there first."
+    return f"✓ Found {youtube} YouTube/Google cookies in {source}. They'll be used when a video needs sign-in."
 
 
 def validate_template(template: str) -> str | None:
@@ -295,7 +391,23 @@ def download(
     """Run a download synchronously. Call from a worker thread.
 
     Live/upcoming streams are always skipped, as are videos whose ID is in skip_ids.
+    Sign-in cookies are only used if YouTube asks for them.
     """
+
+    def attempt(cookies_browser: str, cookies_file: str) -> Result:
+        with_cookies = replace(opts, cookies_browser=cookies_browser, cookies_file=cookies_file)
+        return _download_once(with_cookies, on_progress, on_log, cancel, skip_ids)
+
+    return with_cookie_fallback(attempt, opts.cookies_browser, opts.cookies_file, on_log)
+
+
+def _download_once(
+    opts: DownloadOptions,
+    on_progress: Callable[[Progress], None],
+    on_log: Callable[[str], None],
+    cancel: threading.Event,
+    skip_ids: set[str] | frozenset[str],
+) -> Result:
     result = Result()
 
     def match_filter(info: dict, *, incomplete: bool = False) -> str | None:

@@ -20,6 +20,7 @@ from ytdl.search import (
     is_url,
     search,
 )
+from ytdl.downloader import friendly_error
 from ytdl.ui.common import CARD, MUTED, SECONDARY
 from ytdl.ui.format_dialog import FormatDialog
 
@@ -53,10 +54,15 @@ class ResultRow(ctk.CTkFrame):
 
         actions = ctk.CTkFrame(self, fg_color="transparent")
         actions.grid(row=0, column=2, rowspan=2, padx=8)
+        self.actions = actions
+        browse = lambda: tab.run_search(result.url)  # noqa: E731
+        if result.is_channel:
+            # One click shouldn't queue a channel's entire back catalogue; browse into a tab instead.
+            ctk.CTkButton(actions, text="Browse", width=146, command=browse).pack(side="left")
+            self.bind("<Configure>", self._fit_title)
+            return
         if result.is_playlist:
-            ctk.CTkButton(actions, text="Browse", width=70, command=lambda: tab.run_search(result.url), **SECONDARY).pack(
-                side="left", padx=(0, 6)
-            )
+            ctk.CTkButton(actions, text="Browse", width=70, command=browse, **SECONDARY).pack(side="left", padx=(0, 6))
         else:
             ctk.CTkButton(
                 actions, text="Formats", width=70, **SECONDARY,
@@ -66,7 +72,6 @@ class ResultRow(ctk.CTkFrame):
         self.video_btn.pack(side="left", padx=(0, 6))
         self.audio_btn = ctk.CTkButton(actions, text="Audio", width=70, command=lambda: self._download(tab.app, True))
         self.audio_btn.pack(side="left")
-        self.actions = actions
         self.bind("<Configure>", self._fit_title)
 
     def _fit_title(self, event) -> None:
@@ -240,8 +245,8 @@ class SearchTab:
         self.loading = False
         self.search_btn.configure(state="normal", text="Search")
         self.more_btn.configure(state="normal", text="Load more")
-        message = str(exc).removeprefix("ERROR: ").splitlines()
-        self.info.configure(text=f"Search failed: {message[0] if message else type(exc).__name__}")
+        message = friendly_error(str(exc))
+        self.info.configure(text=f"Search failed: {message or type(exc).__name__}")
 
     def _load_thumbnail(self, generation: int, row: ResultRow, url: str) -> None:
         if generation != self.generation:  # a newer search replaced these rows

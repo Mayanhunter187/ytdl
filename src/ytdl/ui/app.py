@@ -159,10 +159,11 @@ class App(ctk.CTk, DnDWrapper):
         bar.grid(row=2, column=0, sticky="ew", padx=12, pady=(8, 10))
         bar.grid_columnconfigure(0, weight=1)
         self.status_label = ctk.CTkLabel(bar, text="Ready", anchor="w", text_color=MUTED)
-        self.status_label.grid(row=0, column=0, sticky="ew", padx=12, pady=(6, 0))
+        self.status_label.grid(row=0, column=0, sticky="ew", padx=12, pady=(6, 6))
         self.progress = ctk.CTkProgressBar(bar, height=8)
         self.progress.set(0)
-        self.progress.grid(row=1, column=0, sticky="ew", padx=12, pady=(2, 10))
+        self.progress.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 10))
+        self.progress.grid_remove()
         self.app_update_btn = ctk.CTkButton(bar, text="", width=10, command=lambda: self.show_tab("About"))
         self.update_btn = ctk.CTkButton(bar, text="", width=10, command=self.restart)
         ctk.CTkButton(bar, text="Open folder", width=100, command=self.open_output_folder, **SECONDARY).grid(
@@ -332,7 +333,11 @@ class App(ctk.CTk, DnDWrapper):
         if self.jobs.busy or not self._batch:
             return
         batch, self._batch = self._batch, []
-        if not self.notify_var.get() or self.focus_displayof() is not None:
+        try:
+            focused = self.focus_displayof() is not None
+        except (KeyError, TclError):  # Tk can't name some popup widgets (open dropdowns)
+            focused = True
+        if not self.notify_var.get() or focused:
             return  # the user is looking at the app already
         done = sum(1 for j in batch if j.status == DONE)
         failed = sum(1 for j in batch if j.status == FAILED)
@@ -361,6 +366,10 @@ class App(ctk.CTk, DnDWrapper):
             text = last or self.status_label.cget("text")
             if not jobs.busy:
                 self.progress.set(1 if jobs.count(DONE) else 0)
+        if running or jobs.count(DONE):
+            self.progress.grid()
+        else:
+            self.progress.grid_remove()  # an empty bar still draws a sliver
         self.status_label.configure(text=text)
 
     def _save_queue_soon(self) -> None:

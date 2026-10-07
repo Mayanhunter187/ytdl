@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from tkinter import filedialog
 from typing import TYPE_CHECKING
@@ -12,6 +13,7 @@ from ytdl.downloader import (
     NAME_PRESETS,
     VIDEO_QUALITIES,
     preview_template,
+    test_cookies,
     validate_template,
 )
 from ytdl.ui.common import MUTED, SECONDARY, open_path, section_label
@@ -103,6 +105,11 @@ class SettingsTab:
         self._label("Use cookies from")
         ctk.CTkOptionMenu(body, values=COOKIE_CHOICES, variable=app.cookies_var, width=180,
                           command=lambda _v: self._cookies_changed()).grid(row=self.r, column=1, sticky="w", pady=6)
+        self.test_btn = ctk.CTkButton(body, text="Test", width=80, command=self._test_cookies, **SECONDARY)
+        self.test_btn.grid(row=self.r, column=2, padx=(8, 0))
+        self._next()
+        self.cookie_result = ctk.CTkLabel(body, text="", anchor="w", justify="left", wraplength=500)
+        self.cookie_result.grid(row=self.r, column=1, columnspan=3, sticky="w")
         self._next()
         self.cookie_file_row = ctk.CTkFrame(body, fg_color="transparent")
         self.cookie_file_row.grid_columnconfigure(0, weight=1)
@@ -112,10 +119,11 @@ class SettingsTab:
             row=0, column=1, padx=(8, 0)
         )
         self.cookie_file_row_index = self.r
-        self._hint("Lets yt-dlp use your YouTube login so it can download videos that need you to be signed in. "
-                   "Firefox works best. Chrome and Edge must be fully closed, and recent versions encrypt cookies "
-                   "in a way that may stop this from working; if so, export a cookies.txt file with a browser "
-                   "extension instead. Cookies are only sent to YouTube.")
+        self._hint("Only used when YouTube says a video needs a signed-in account; everything else downloads "
+                   "without them. Firefox works best. Chrome, Edge and other Chromium browsers lock and encrypt "
+                   "their cookies, so they usually only work while the browser is fully closed, and sometimes not "
+                   "at all. A cookies.txt file (exported with a browser extension) always works. Cookies are only "
+                   "sent to YouTube. Press Test to check.")
         self._cookies_changed()
 
         # --- Convenience
@@ -176,7 +184,26 @@ class SettingsTab:
     def _split_changed(self) -> None:
         self.keep_full.configure(state="normal" if self.app.split_var.get() else "disabled")
 
+    def _test_cookies(self) -> None:
+        browser, file = self.app.cookies_browser(), self.app.cookies_file()
+        self.test_btn.configure(state="disabled")
+        self.cookie_result.configure(text="Checking…", text_color=MUTED)
+
+        def work() -> None:
+            message = test_cookies(browser, file)
+            self.app.call_soon(self._show_cookie_result, message)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _show_cookie_result(self, message: str) -> None:
+        self.test_btn.configure(state="normal")
+        color = ERROR_COLOR if message.startswith("✗") else ("#2f7d32", "#6cc070") if message.startswith("✓") \
+            else ("gray10", "gray90")
+        self.cookie_result.configure(text=message, text_color=color)
+
     def _cookies_changed(self) -> None:
+        self.cookie_result.configure(text="")
+        self.test_btn.configure(state="disabled" if self.app.cookies_var.get() == COOKIES_OFF else "normal")
         if self.app.cookies_var.get() == COOKIES_FILE_OPTION:
             self.cookie_file_row.grid(row=self.cookie_file_row_index, column=1, columnspan=3, sticky="ew", pady=(0, 6))
         else:
