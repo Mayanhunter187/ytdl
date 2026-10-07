@@ -182,9 +182,17 @@ def _extract(url: str, cookies_browser: str, cookies_file: str, comments: bool) 
         return ydl.extract_info(url, download=False)
 
 
+def extract(url: str, cookies_browser: str = "", cookies_file: str = "") -> dict:
+    """A single video's metadata (no download)."""
+    return with_cookie_fallback(lambda b, f: _extract(url, b, f, comments=False), cookies_browser, cookies_file)
+
+
 def scan(url: str, cookies_browser: str = "", cookies_file: str = "") -> TrackScan | None:
+    return find_tracks(extract(url, cookies_browser, cookies_file), url, cookies_browser, cookies_file)
+
+
+def find_tracks(info: dict, url: str, cookies_browser: str = "", cookies_file: str = "") -> TrackScan | None:
     """Look for separate songs in a video. None if it seems to be a single piece."""
-    info = with_cookie_fallback(lambda b, f: _extract(url, b, f, comments=False), cookies_browser, cookies_file)
     if info.get("_type") == "playlist":
         return None
     duration = float(info.get("duration") or 0)

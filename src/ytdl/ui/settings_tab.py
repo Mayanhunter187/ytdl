@@ -92,8 +92,26 @@ class SettingsTab:
         app.name_template_var.trace_add("write", lambda *_: self._template_changed())
         self._template_changed()
 
-        # --- Albums and mixes
-        self._section("Albums and mixes")
+        # --- Music
+        self._section("Music")
+        self._label("Sort songs")
+        ctk.CTkSwitch(body, text="Put audio downloads in Artist / Album folders", variable=app.organize_var,
+                      command=self._organize_changed).grid(row=self.r, column=1, columnspan=3, sticky="w", pady=6)
+        self._next()
+        self.lookup = ctk.CTkSwitch(body, text="Look up missing album names online (MusicBrainz)",
+                                    variable=app.lookup_var)
+        self.lookup.grid(row=self.r, column=1, columnspan=3, sticky="w", pady=(0, 4))
+        self._next()
+        self.ask_unsorted = ctk.CTkSwitch(body, text="Ask me when the artist or album can't be found",
+                                          variable=app.ask_unsorted_var)
+        self.ask_unsorted.grid(row=self.r, column=1, columnspan=3, sticky="w", pady=(0, 6))
+        self._hint("Songs land in Downloads\\YTDL\\Pantera\\Vulgar Display of Power\\Walk.mp3, with matching "
+                   "tags. The artist and album come from YouTube when it knows them, otherwise from the video "
+                   "title and MusicBrainz, a free music database (only the artist and song name are sent). "
+                   "If something can't be found you're asked; with asking off, the song goes to the artist's "
+                   "Singles folder. Playlists are sorted per song without asking. Videos and non-music audio "
+                   "use the file name template above.")
+        self._organize_changed()
         self._label("Several songs")
         ctk.CTkSegmentedButton(body, values=MULTI_SONG_CHOICES, variable=app.multi_song_var,
                                command=lambda _v: self._multi_song_changed()).grid(
@@ -188,6 +206,11 @@ class SettingsTab:
             self.preview.configure(text=f"Invalid template: {error}", text_color=ERROR_COLOR)
         else:
             self.preview.configure(text=f"Example: {preview_template(template)}", text_color=("gray10", "gray90"))
+
+    def _organize_changed(self) -> None:
+        state = "normal" if self.app.organize_var.get() else "disabled"
+        self.lookup.configure(state=state)
+        self.ask_unsorted.configure(state=state)
 
     def _multi_song_changed(self) -> None:
         splitting = self.app.multi_song_var.get() != MULTI_SONG_OFF

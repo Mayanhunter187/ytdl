@@ -17,8 +17,9 @@ from ytdl.downloader import DEFAULT_NAME_TEMPLATE, DownloadOptions, validate_tem
 from ytdl.history import History
 from ytdl.jobs import DONE, FAILED, RUNNING, SKIPPED, Job, JobManager
 from ytdl.ui.about_tab import AboutTab
-from ytdl.tracks import MIN_MULTI_SONG_SECONDS, TrackScan
-from ytdl.tracks import scan as scan_tracks
+from ytdl.music import SINGLES, Song, identify, is_music
+from ytdl.tracks import MIN_MULTI_SONG_SECONDS, TrackScan, find_tracks
+from ytdl.tracks import extract as extract_video
 from ytdl.ui.common import MUTED, SECONDARY, open_path, resource_path, reveal
 from ytdl.ui.downloads_tab import DownloadsTab
 from ytdl.ui.history_tab import HistoryTab
@@ -34,6 +35,7 @@ from ytdl.ui.settings_tab import (
     MULTI_SONG_OFF,
     SettingsTab,
 )
+from ytdl.ui.song_dialog import SongDialog
 from ytdl.ui.track_dialog import TrackDialog
 from ytdl.updater import DATA_DIR, AppRelease, UpdateInfo
 
@@ -102,6 +104,9 @@ class App(ctk.CTk, DnDWrapper):
         if "multi_song" not in self.settings and self.settings.get("split_chapters"):
             self.settings["multi_song"] = MULTI_SONG_AUTO  # carry over the old "split chapters" switch
         self.multi_song_var = self._setting_var(ctk.StringVar, "multi_song", MULTI_SONG_ASK)
+        self.organize_var = self._setting_var(ctk.BooleanVar, "organize_music", True)
+        self.lookup_var = self._setting_var(ctk.BooleanVar, "lookup_albums", True)
+        self.ask_unsorted_var = self._setting_var(ctk.BooleanVar, "ask_unsorted", True)
         self.keep_full_var = self._setting_var(ctk.BooleanVar, "keep_full", False)
         self.concurrent_var = self._setting_var(ctk.StringVar, "concurrent", "2")
         self.skip_var = self._setting_var(ctk.BooleanVar, "skip_existing", True)
@@ -296,6 +301,8 @@ class App(ctk.CTk, DnDWrapper):
             playlist=self.playlist_var.get() if playlist is None else playlist,
             name_template=self._name_template(),
             keep_full=self.keep_full_var.get(),
+            organize_music=self.organize_var.get(),
+            lookup_albums=self.lookup_var.get(),
             cookies_browser=self.cookies_browser(),
             cookies_file=self.cookies_file(),
         )
@@ -311,41 +318,60 @@ class App(ctk.CTk, DnDWrapper):
 
     def request_download(self, url: str, label: str, audio_only: bool | None = None, playlist: bool | None = None,
                          duration: float | None = None, on_done: Callable[[bool], None] | None = None) -> None:
-        """Queue a download, first checking audio downloads for several songs.
+        """Queue a download. Audio of a single video is checked first: for several
+        songs (album / mix) and, when sorting music, for its artist and album.
 
         on_done(added) runs once the item is queued (True) or the user backs out (False).
         """
         opts = self.make_options(url, audio_only=audio_only, playlist=playlist)
         mode = self.multi_song_var.get()
-        if (not opts.audio_only or opts.playlist or mode == MULTI_SONG_OFF
-                or (duration is not None and duration < MIN_MULTI_SONG_SECONDS)):
-            self.enqueue(opts, label)
-            if on_done:
-                on_done(True)
+        want_tracks = mode != MULTI_SONG_OFF and (duration is None or duration >= MIN_MULTI_SONG_SECONDS)
+        if not opts.audio_only or opts.playlist or not (want_tracks or opts.organize_music):
+            self.queue_download(opts, label, on_done)
             return
 
-        self._refresh_status(last=f"Looking for songs in {label}…")
+        self._refresh_status(last=f"Checking {label}…")
+        cookies = (opts.cookies_browser, opts.cookies_file)
+        lookup = opts.lookup_albums
 
         def work() -> None:
+            tracks = song = None
             try:
-                found = scan_tracks(url, opts.cookies_browser, opts.cookies_file)
+                info = extract_video(url, *cookies)
+                if want_tracks:
+                    tracks = find_tracks(info, url, *cookies)
+                if not tracks and opts.organize_music and is_music(info):
+                    song = identify(info, lookup=lookup)
             except Exception:
-                found = None  # the download itself will report any real problem
-            self.call_soon(self._after_scan, opts, label, found, mode, on_done)
+                pass  # the download itself will report any real problem
+            self.call_soon(self._after_check, opts, label, tracks, song, mode, on_done)
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _after_scan(self, opts: DownloadOptions, label: str, found: TrackScan | None, mode: str,
-                    on_done: Callable[[bool], None] | None) -> None:
-        if found and mode == MULTI_SONG_AUTO:
-            picked = [t for t in found.tracks if t.selected]
+    def _after_check(self, opts: DownloadOptions, label: str, tracks: TrackScan | None, song: Song | None,
+                     mode: str, on_done: Callable[[bool], None] | None) -> None:
+        if tracks and mode == MULTI_SONG_AUTO:
+            picked = [t for t in tracks.tracks if t.selected]
             opts.tracks = [{"start": t.start, "end": t.end, "name": t.name} for t in picked]
-            opts.album, opts.artist, opts.artist_titles = found.album, found.artist, found.artist_titles
-            label = f"{found.album} ({len(picked)} songs)"
-        elif found:
-            self._refresh_status(last=f"Found {len(found.tracks)} songs in {label}")
-            TrackDialog(self, opts, label, found, on_done)
+            opts.album, opts.artist, opts.artist_titles = tracks.album, tracks.artist, tracks.artist_titles
+            label = f"{tracks.album} ({len(picked)} songs)"
+        elif tracks:
+            self._refresh_status(last=f"Found {len(tracks.tracks)} songs in {label}")
+            TrackDialog(self, opts, label, tracks, on_done)
             return
+        elif song and not song.problems:
+            opts.song = song.as_dict()
+            label = f"{song.artist} - {song.title}"
+        elif song and self.ask_unsorted_var.get():
+            self._refresh_status(last=f"Need a hand sorting {label}")
+            SongDialog(self, opts, label, song, on_done)
+            return
+        elif song and song.artist and "artist_guess" not in song.problems:
+            opts.song = {**song.as_dict(), "album": SINGLES}  # not asking: unknown albums go to Singles
+            label = f"{song.artist} - {song.title}"
+        self.queue_download(opts, label, on_done)
+
+    def queue_download(self, opts: DownloadOptions, label: str, on_done: Callable[[bool], None] | None) -> None:
         self._refresh_status(last=f"Added: {label}")
         self.enqueue(opts, label)
         if on_done:

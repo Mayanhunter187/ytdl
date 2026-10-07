@@ -57,6 +57,11 @@ class DownloadOptions:
     number_tracks: bool = True
     artist_titles: bool = False  # track names are "Artist - Title"
     keep_full: bool = False  # with tracks: also keep the unsplit file
+    # Music sorting into <output>/Artist/Album/. song is decided up front (by the
+    # song dialog) for single videos; playlist entries are identified as they go.
+    organize_music: bool = False
+    lookup_albums: bool = True
+    song: dict = field(default_factory=dict)  # {"artist", "album", "title", "year"}
     cookies_browser: str = ""
     cookies_file: str = ""
     format_spec: str = ""  # explicit yt-dlp format from the format picker
@@ -318,6 +323,7 @@ def build_ydl_opts(opts: DownloadOptions) -> dict:
         outtmpl=name + ".%(ext)s",
         noplaylist=not opts.playlist,
         windowsfilenames=True,
+        allow_playlist_files=False,  # no stray playlist cover/description files
         noprogress=True,
         postprocessors=[],
     )
@@ -352,18 +358,51 @@ def build_ydl_opts(opts: DownloadOptions) -> dict:
     return ydl_opts
 
 
+class _MusicTagger(PostProcessor):
+    """Before download: settle the song's artist/album/title so tags and the
+    Artist/Album folder agree. Runs per video, so playlists are sorted per song."""
+
+    def __init__(self, opts: DownloadOptions) -> None:
+        super().__init__()
+        self.opts = opts
+
+    def run(self, info: dict):
+        from ytdl.music import SINGLES, identify, is_music
+
+        opts = self.opts
+        if opts.song:
+            song = dict(opts.song)
+        elif opts.organize_music and opts.playlist and is_music(info):
+            found = identify(info, lookup=opts.lookup_albums)
+            if not found.artist or found.artist_source == "channel":
+                return [], info  # no trustworthy artist; leave it in the playlist folder
+            song = found.as_dict()
+            song["album"] = song["album"] or SINGLES
+        else:
+            return [], info
+        info["artist"], info["album"], info["track"] = song["artist"], song["album"], song["title"]
+        if song.get("year"):
+            info["release_year"] = song["year"]
+        info["ytdl_sort"] = song
+        return [], info
+
+
 class _Collector(PostProcessor):
     """Runs after the file reaches its final location and records it."""
 
-    def __init__(self, result: Result) -> None:
+    def __init__(self, result: Result, opts: DownloadOptions) -> None:
         super().__init__()
         self.result = result
+        self.opts = opts
 
     def run(self, info: dict):
         path = info.get("filepath")
         if not path:
             return [], info
         path = Path(path)
+        if song := info.get("ytdl_sort"):
+            path = _move_into_library(path, self.opts.output_dir, song)
+            info["filepath"] = str(path)
         self.result.items.append(
             DownloadedItem(
                 video_id=info.get("id", ""),
@@ -373,6 +412,22 @@ class _Collector(PostProcessor):
             )
         )
         return [], info
+
+
+def _move_into_library(path: Path, root: Path, song: dict) -> Path:
+    """<root>/Artist/Album/Title.ext. The same song again replaces the old file."""
+    from ytdl.tracks import safe_filename
+
+    folder = root / safe_filename(song["artist"]) / safe_filename(song["album"])
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / f"{safe_filename(song['title'] or path.stem)}{path.suffix}"
+    if target != path:
+        target.unlink(missing_ok=True)
+        shutil.move(str(path), target)
+        # Tidy a template folder (e.g. a channel folder) the move left empty.
+        if path.parent != root and path.parent.is_dir() and not any(path.parent.iterdir()):
+            path.parent.rmdir()
+    return target
 
 
 def download(
@@ -453,7 +508,9 @@ def _download_once(
 
     opts.output_dir.mkdir(parents=True, exist_ok=True)
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.add_post_processor(_Collector(result), when="after_move")
+        if opts.audio_only and (opts.song or opts.organize_music) and not opts.tracks:
+            ydl.add_post_processor(_MusicTagger(opts), when="pre_process")
+        ydl.add_post_processor(_Collector(result, opts), when="after_move")
         ret = ydl.download([opts.url])
     if cancel.is_set():
         raise DownloadCancelled()
@@ -470,7 +527,11 @@ def _split_into_tracks(opts: DownloadOptions, item: DownloadedItem,
     from ytdl.tracks import safe_filename, split_audio  # tracks imports this module
 
     full = item.path
-    folder = full.parent / safe_filename(opts.album or item.title)
+    album = safe_filename(opts.album or item.title)
+    if opts.organize_music and opts.artist:
+        folder = opts.output_dir / safe_filename(opts.artist) / album  # the music library layout
+    else:
+        folder = full.parent / album
 
     def progress(number: int, total: int, name: str) -> None:
         on_progress(Progress(item.title, (number - 1) / total * 100, f"Saving song {number} of {total}: {name}",

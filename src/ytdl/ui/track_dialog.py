@@ -83,6 +83,7 @@ class TrackDialog(ctk.CTkToplevel):
         self.artist = ctk.StringVar(value=scan.artist)
         ctk.CTkEntry(meta, textvariable=self.artist).grid(row=0, column=3, sticky="ew")
         self.album.trace_add("write", lambda *_: self._update_summary())
+        self.artist.trace_add("write", lambda *_: self._update_summary())
 
         # --- options
         bar = ctk.CTkFrame(self, fg_color="transparent")
@@ -139,6 +140,8 @@ class TrackDialog(ctk.CTkToplevel):
     def _update_summary(self) -> None:
         count = len(self._selected())
         folder = safe_filename(self.album.get().strip() or self.scan.title)
+        if self.opts.organize_music and self.artist.get().strip():
+            folder = f"{safe_filename(self.artist.get().strip())}\\{folder}"
         self.summary.configure(
             text=f"{count} of {len(self.rows)} songs  ·  saved as {self.opts.audio_format.upper()} files in "
                  f"{self.opts.output_dir.name}\\{folder}"
